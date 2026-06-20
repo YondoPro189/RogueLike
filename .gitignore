@@ -1,0 +1,14 @@
+# Roblox place files (binary, large — use Rojo + src/ instead)
+*.rbxl
+*.rbxlx
+
+# Roblox lock files
+*.rbxm.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+*.code-workspace
