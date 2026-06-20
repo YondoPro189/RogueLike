@@ -24,6 +24,7 @@ end
 local playerAttackLock: { [Player]: boolean } = {}
 local playerStunned: { [Player]: boolean } = {}
 local playerBlocking: { [Player]: boolean } = {}
+local playerBlockStartTime: { [Player]: number } = {} -- timestamp de cuando empezo el bloqueo
 local playerChargingMana: { [Player]: boolean } = {}
 local playerManaReachedMax: { [Player]: boolean } = {}
 local playerDashing: { [Player]: boolean } = {}
@@ -31,7 +32,7 @@ local playerLastDash: { [Player]: number } = {}
 local playerBlockCooldown: { [Player]: number } = {} -- timestamp del último golpe bloqueado
 local playerLastAttack: { [Player]: number } = {}
 local playerLastM2: { [Player]: number } = {}
-local playerCombatTracks: { [Player]: { punch: { AnimationTrack }, m2: AnimationTrack, block: AnimationTrack?, dash: AnimationTrack? } } = {}
+local playerCombatTracks: { [Player]: { punch: { AnimationTrack }, m2: { AnimationTrack }, block: AnimationTrack?, dash: AnimationTrack?, dashRight: AnimationTrack?, dashLeft: AnimationTrack?, dashBack: AnimationTrack? } } = {}
 
 local function loadCombatAnimations(player: Player, character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -49,10 +50,14 @@ local function loadCombatAnimations(player: Player, character: Model)
 		table.insert(punchTracks, track)
 	end
 
-	local m2Animation = Instance.new("Animation")
-	m2Animation.AnimationId = CombatConfig.M2_ANIMATION
-	local m2Track = humanoid:LoadAnimation(m2Animation)
-	m2Track.Priority = Enum.AnimationPriority.Action
+	local m2Tracks: { AnimationTrack } = {}
+	for _, animationId in CombatConfig.M2_ANIMATIONS do
+		local m2Animation = Instance.new("Animation")
+		m2Animation.AnimationId = animationId
+		local m2Track = humanoid:LoadAnimation(m2Animation)
+		m2Track.Priority = Enum.AnimationPriority.Action
+		table.insert(m2Tracks, m2Track)
+	end
 
 	local blockTrack: AnimationTrack? = nil
 	if CombatConfig.BLOCK_ANIMATION ~= "" then
@@ -70,11 +75,38 @@ local function loadCombatAnimations(player: Player, character: Model)
 		dashTrack.Priority = Enum.AnimationPriority.Action2
 	end
 
+	local dashRightTrack: AnimationTrack? = nil
+	if CombatConfig.DASH_ANIMATION_RIGHT then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = CombatConfig.DASH_ANIMATION_RIGHT
+		dashRightTrack = humanoid:LoadAnimation(anim)
+		dashRightTrack.Priority = Enum.AnimationPriority.Action2
+	end
+
+	local dashLeftTrack: AnimationTrack? = nil
+	if CombatConfig.DASH_ANIMATION_LEFT then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = CombatConfig.DASH_ANIMATION_LEFT
+		dashLeftTrack = humanoid:LoadAnimation(anim)
+		dashLeftTrack.Priority = Enum.AnimationPriority.Action2
+	end
+
+	local dashBackTrack: AnimationTrack? = nil
+	if CombatConfig.DASH_ANIMATION_BACK then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = CombatConfig.DASH_ANIMATION_BACK
+		dashBackTrack = humanoid:LoadAnimation(anim)
+		dashBackTrack.Priority = Enum.AnimationPriority.Action2
+	end
+
 	playerCombatTracks[player] = {
 		punch = punchTracks,
-		m2 = m2Track,
+		m2 = m2Tracks,
 		block = blockTrack,
 		dash = dashTrack,
+		dashRight = dashRightTrack,
+		dashLeft = dashLeftTrack,
+		dashBack = dashBackTrack,
 	}
 end
 
@@ -90,7 +122,11 @@ local function playCombatAnimation(player: Player, attackType: string, comboInde
 			track:Play()
 		end
 	elseif attackType == "M2" then
-		tracks.m2:Play()
+		local index = comboIndex or 1
+		local track = tracks.m2[index]
+		if track then
+			track:Play()
+		end
 	elseif attackType == "Block" and tracks.block then
 		BlockAnimation.play(tracks.block)
 	end
@@ -154,6 +190,8 @@ local function endBlock(player: Player)
 
 	setBlockingState(player, false)
 	stopBlockAnimation(player)
+	playerBlockStartTime[player] = nil
+	player:SetAttribute("BlockStartTime", nil)
 
 	if playerStunned[player] then
 		return
@@ -173,6 +211,8 @@ local function startBlock(player: Player)
 
 	setBlockingState(player, true)
 	playCombatAnimation(player, "Block")
+	playerBlockStartTime[player] = os.clock() -- registrar cuando empezó el bloqueo
+	player:SetAttribute("BlockStartTime", os.clock())
 
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -377,9 +417,25 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 		local isBlocking = targetModel and CombatHit.isTargetBlocking(targetModel) or false
 		local isBlockedFromFront = (isBlocking and targetModel) and CombatHit.isBlockingFromFront(targetModel, character) or false
 		local blockBroken = false
+		local isPerfectBlock = false
 
 		if isM2 and isBlocking and isBlockedFromFront then
-			blockBroken = true
+			local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+			if targetPlayer then
+				local blockStart = targetPlayer:GetAttribute("BlockStartTime") or playerBlockStartTime[targetPlayer]
+				local blockAge = os.clock() - (blockStart or -math.huge)
+				local window = CombatConfig.PERFECT_BLOCK_WINDOW or 0.4
+				print("[Rogue2] M2 bloqueado de frente - blockStart:", blockStart, "blockAge:", string.format("%.3f", blockAge), "ventana:", window)
+				if blockAge <= window then
+					isPerfectBlock = true
+					print("[Rogue2] → PERFECT BLOCK activado")
+				else
+					blockBroken = true
+					print("[Rogue2] → Block roto (fuera de ventana)")
+				end
+			else
+				blockBroken = true
+			end
 		end
 
 		local multiplier = 1
@@ -408,7 +464,17 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 			end
 		end
 
-		if blockBroken then
+		-- Manejar efectos de bloqueo (fuera del if de daño, aplican aunque el daño sea 0)
+		if isPerfectBlock then
+			-- Perfect block: el defensor bloqueó justo a tiempo, stun al atacante
+			print("[Rogue2] PERFECT BLOCK!", attacker.Name, "fue pareado por el defensor")
+			applyStun(attacker, CombatConfig.PERFECT_BLOCK_STUN_DURATION or 1)
+
+			local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+			if targetPlayer then
+				targetPlayer:SetAttribute("PerfectBlockTrigger", os.clock())
+			end
+		elseif blockBroken then
 			-- M2 rompe el bloqueo: stun completo
 			if targetModel then
 				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
@@ -524,8 +590,24 @@ combatRemote.OnServerEvent:Connect(function(player: Player, attackType: string, 
 
 		-- Reproducir animación de dash para replicación
 		local tracks = playerCombatTracks[player]
-		if tracks and tracks.dash then
-			tracks.dash:Play()
+		if tracks then
+			local direction = comboIndex :: any
+			local trackToPlay = tracks.dash
+			local isBack = direction == "Back" or direction == "BackLeft" or direction == "BackRight"
+			local isRight = direction == "Right" or direction == "ForwardRight" or direction == "BackRight"
+			local isLeft = direction == "Left" or direction == "ForwardLeft" or direction == "BackLeft"
+
+			if isBack and tracks.dashBack then
+				trackToPlay = tracks.dashBack
+			elseif isRight and tracks.dashRight then
+				trackToPlay = tracks.dashRight
+			elseif isLeft and tracks.dashLeft then
+				trackToPlay = tracks.dashLeft
+			end
+
+			if trackToPlay then
+				trackToPlay:Play()
+			end
 		end
 
 		task.delay(CombatConfig.DASH_DURATION, function()
@@ -590,7 +672,7 @@ combatRemote.OnServerEvent:Connect(function(player: Player, attackType: string, 
 		playerLastM2[player] = os.clock()
 		playerLastAttack[player] = os.clock()
 
-		playCombatAnimation(player, "M2")
+		playCombatAnimation(player, "M2", comboIndex)
 
 		local m2Hit = false
 
@@ -613,6 +695,7 @@ Players.PlayerRemoving:Connect(function(player)
 	playerAttackLock[player] = nil
 	playerStunned[player] = nil
 	playerBlocking[player] = nil
+	playerBlockStartTime[player] = nil
 	playerChargingMana[player] = nil
 	playerManaReachedMax[player] = nil
 	playerBlockCooldown[player] = nil

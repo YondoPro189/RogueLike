@@ -145,9 +145,51 @@ function CombatHit.applyDamage(
 	local isBlocking = CombatHit.isTargetBlocking(targetModel)
 	local isBlockedFromFront = isBlocking and CombatHit.isBlockingFromFront(targetModel, attackerCharacter)
 	local blockBroken = false
+	local isPerfectBlock = false
 
 	if isM2 and isBlocking and isBlockedFromFront then
-		blockBroken = true
+		local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+		if targetPlayer then
+			local blockStart = targetPlayer:GetAttribute("BlockStartTime")
+			local blockAge = os.clock() - (blockStart or -math.huge)
+			local window = CombatConfig.PERFECT_BLOCK_WINDOW or 0.4
+			if blockAge <= window then
+				isPerfectBlock = true
+			else
+				blockBroken = true
+			end
+		else
+			blockBroken = true
+		end
+	end
+
+	if isPerfectBlock then
+		local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+		if targetPlayer then
+			targetPlayer:SetAttribute("PerfectBlockTrigger", os.clock())
+		end
+
+		local attackerPlayer = Players:GetPlayerFromCharacter(attackerCharacter)
+		if attackerPlayer then
+			local bindables = ReplicatedStorage:FindFirstChild("Bindables")
+			local breakBlockEvent = bindables and bindables:FindFirstChild("BreakBlockAndStun") :: BindableEvent?
+			if breakBlockEvent then
+				breakBlockEvent:Fire(attackerPlayer, CombatConfig.PERFECT_BLOCK_STUN_DURATION or 1.0)
+			end
+		else
+			-- Dummy / NPC
+			attackerCharacter:SetAttribute("IsStunned", true)
+			local attackerHumanoid = attackerCharacter:FindFirstChildOfClass("Humanoid")
+			if attackerHumanoid then
+				attackerHumanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED or 0
+			end
+			task.delay(CombatConfig.PERFECT_BLOCK_STUN_DURATION or 1.0, function()
+				if attackerCharacter.Parent then
+					attackerCharacter:SetAttribute("IsStunned", false)
+				end
+			end)
+		end
+		return
 	end
 
 	local multiplier = 1

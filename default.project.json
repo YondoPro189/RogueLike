@@ -11,7 +11,7 @@
     "StarterPlayer": {
       "$className": "StarterPlayer",
       "$properties": {
-        "CharacterRigType": "R6",
+        "CharacterRigType": { "Enum": 0 },
         "LoadCharacterAppearance": false
       },
       "StarterPlayerScripts": {

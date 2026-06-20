@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local CombatConfig = require(ReplicatedStorage.Shared.CombatConfig)
 
@@ -21,8 +22,11 @@ local lastDashTime = 0
 local currentCharacter: Model? = nil
 local currentHumanoid: Humanoid? = nil
 local punchTracks: { AnimationTrack } = {}
-local m2Track: AnimationTrack? = nil
+local m2Tracks: { AnimationTrack } = {}
 local dashTrack: AnimationTrack? = nil
+local dashRightTrack: AnimationTrack? = nil
+local dashLeftTrack: AnimationTrack? = nil
+local dashBackTrack: AnimationTrack? = nil
 local currentAttackTrack: AnimationTrack? = nil
 
 local function requestCancelRun()
@@ -110,16 +114,41 @@ local function loadCombatAnimations(humanoid: Humanoid)
 		table.insert(punchTracks, track)
 	end
 
-	local m2Animation = Instance.new("Animation")
-	m2Animation.AnimationId = CombatConfig.M2_ANIMATION
-	m2Track = humanoid:LoadAnimation(m2Animation)
-	m2Track.Priority = Enum.AnimationPriority.Action
+	m2Tracks = {}
+	for _, animationId in CombatConfig.M2_ANIMATIONS do
+		local m2Animation = Instance.new("Animation")
+		m2Animation.AnimationId = animationId
+		local track = humanoid:LoadAnimation(m2Animation)
+		track.Priority = Enum.AnimationPriority.Action
+		table.insert(m2Tracks, track)
+	end
 
 	if CombatConfig.DASH_ANIMATION ~= "" and not string.find(CombatConfig.DASH_ANIMATION, "PLACEHOLDER") then
 		local dashAnimation = Instance.new("Animation")
 		dashAnimation.AnimationId = CombatConfig.DASH_ANIMATION
 		dashTrack = humanoid:LoadAnimation(dashAnimation)
 		dashTrack.Priority = Enum.AnimationPriority.Action2
+	end
+
+	if CombatConfig.DASH_ANIMATION_RIGHT then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = CombatConfig.DASH_ANIMATION_RIGHT
+		dashRightTrack = humanoid:LoadAnimation(anim)
+		dashRightTrack.Priority = Enum.AnimationPriority.Action2
+	end
+
+	if CombatConfig.DASH_ANIMATION_LEFT then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = CombatConfig.DASH_ANIMATION_LEFT
+		dashLeftTrack = humanoid:LoadAnimation(anim)
+		dashLeftTrack.Priority = Enum.AnimationPriority.Action2
+	end
+
+	if CombatConfig.DASH_ANIMATION_BACK then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = CombatConfig.DASH_ANIMATION_BACK
+		dashBackTrack = humanoid:LoadAnimation(anim)
+		dashBackTrack.Priority = Enum.AnimationPriority.Action2
 	end
 end
 
@@ -213,11 +242,16 @@ local function performM2()
 
 	startAttack()
 
-	if m2Track then
-		playAttackAnimation(m2Track)
+	if #m2Tracks > 0 then
+		local randomIndex = math.random(1, #m2Tracks)
+		local track = m2Tracks[randomIndex]
+		if track then
+			playAttackAnimation(track)
+		end
+		combatRemote:FireServer("M2", randomIndex)
+	else
+		combatRemote:FireServer("M2")
 	end
-
-	combatRemote:FireServer("M2")
 	beginAttack(CombatConfig.M2_ATTACK_DURATION, false, true)
 end
 
@@ -342,6 +376,28 @@ local DIRECTION_VECTORS = {
 	BackRight = Vector3.new(1, 0, 1).Unit,
 }
 
+local function getCameraBasedDashDirection(): Vector3
+	local direction = getDashDirection()
+	local localDir = DIRECTION_VECTORS[direction] or Vector3.new(0, 0, -1)
+
+	-- Usar la cámara como referencia de "adelante" (igual que el movimiento del personaje)
+	local camera = workspace.CurrentCamera
+	local camCFrame = camera.CFrame
+	local camForward = Vector3.new(camCFrame.LookVector.X, 0, camCFrame.LookVector.Z)
+	if camForward.Magnitude < 0.001 then
+		camForward = Vector3.new(0, 0, -1)
+	end
+	camForward = camForward.Unit
+	local camRight = Vector3.new(camCFrame.RightVector.X, 0, camCFrame.RightVector.Z).Unit
+
+	-- Combinar forward/right de la cámara con el input local
+	local worldDir = camForward * (-localDir.Z) + camRight * localDir.X
+	if worldDir.Magnitude > 0 then
+		worldDir = worldDir.Unit
+	end
+	return worldDir
+end
+
 local function performDash()
 	if not canDash() then
 		return
@@ -357,15 +413,7 @@ local function performDash()
 	end
 
 	local direction = getDashDirection()
-	local localDir = DIRECTION_VECTORS[direction] or Vector3.new(0, 0, -1)
-
-	-- Convertir dirección local a dirección mundial basada en la orientación del personaje
-	local worldDir = rootPart.CFrame:VectorToWorldSpace(localDir)
-	-- Mantener en el plano horizontal
-	worldDir = Vector3.new(worldDir.X, 0, worldDir.Z)
-	if worldDir.Magnitude > 0 then
-		worldDir = worldDir.Unit
-	end
+	local worldDir = getCameraBasedDashDirection()
 
 	isDashing = true
 	lastDashTime = os.clock()
@@ -377,9 +425,47 @@ local function performDash()
 		stopManaCharging()
 	end
 
-	-- Reproducir animación de dash
-	if dashTrack then
-		dashTrack:Play()
+	-- Detectar shiftlock (el ratón está bloqueado al centro)
+	local isShiftLocked = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+
+	-- Elegir animación según dirección (puramente visual, sin afectar físicas)
+	local trackToPlay: AnimationTrack? = nil
+	local isBack = direction == "Back" or direction == "BackLeft" or direction == "BackRight"
+	if isShiftLocked then
+		local isRight = direction == "Right" or direction == "ForwardRight" or direction == "BackRight"
+		local isLeft = direction == "Left" or direction == "ForwardLeft" or direction == "BackLeft"
+		if isBack and dashBackTrack then
+			trackToPlay = dashBackTrack
+		elseif isRight and dashRightTrack then
+			trackToPlay = dashRightTrack
+		elseif isLeft and dashLeftTrack then
+			trackToPlay = dashLeftTrack
+		else
+			trackToPlay = dashTrack
+		end
+	else
+		if isBack and dashBackTrack then
+			trackToPlay = dashBackTrack
+		else
+			trackToPlay = dashTrack
+		end
+	end
+
+	if trackToPlay then
+		trackToPlay:Play()
+	end
+
+	-- Congelar movimiento del humanoid para que no pelee con el BodyVelocity
+	currentHumanoid.WalkSpeed = 0
+
+	-- Desactivar colisiones durante el dash (i-frames)
+	-- así la animación no choca con nada y el dash va recto
+	local collidableParts: { BasePart } = {}
+	for _, part in currentCharacter:GetDescendants() do
+		if part:IsA("BasePart") and part.CanCollide then
+			part.CanCollide = false
+			table.insert(collidableParts, part)
+		end
 	end
 
 	-- Notificar al servidor
@@ -388,14 +474,21 @@ local function performDash()
 	-- Aplicar velocidad de dash
 	local dashSpeed = CombatConfig.DASH_DISTANCE / CombatConfig.DASH_DURATION
 	local bodyVelocity = Instance.new("BodyVelocity")
-	bodyVelocity.MaxForce = Vector3.new(1e5, 0, 1e5)
+	bodyVelocity.MaxForce = Vector3.new(1e6, 0, 1e6)
 	bodyVelocity.Velocity = worldDir * dashSpeed
-	bodyVelocity.P = 1e5
+	bodyVelocity.P = 1e6
 	bodyVelocity.Parent = rootPart
 
 	task.delay(CombatConfig.DASH_DURATION, function()
 		if bodyVelocity and bodyVelocity.Parent then
 			bodyVelocity:Destroy()
+		end
+
+		-- Restaurar colisiones
+		for _, part in collidableParts do
+			if part and part.Parent then
+				part.CanCollide = true
+			end
 		end
 
 		isDashing = false

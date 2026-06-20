@@ -10,7 +10,7 @@ export type DummyBehavior = "Idle" | "Blocking" | "Attacking" | "AttackingM2"
 export type CombatTracks = {
 	punch: { AnimationTrack },
 	block: AnimationTrack?,
-	m2: AnimationTrack?,
+	m2: { AnimationTrack },
 }
 
 local TrainingDummy = {}
@@ -44,18 +44,19 @@ function TrainingDummy.loadCombatAnimations(humanoid: Humanoid): CombatTracks
 		BlockAnimation.configureTrack(blockTrack)
 	end
 
-	local m2Track: AnimationTrack? = nil
-	if CombatConfig.M2_ANIMATION ~= "" then
+	local m2Tracks: { AnimationTrack } = {}
+	for _, animationId in CombatConfig.M2_ANIMATIONS do
 		local m2Animation = Instance.new("Animation")
-		m2Animation.AnimationId = CombatConfig.M2_ANIMATION
-		m2Track = humanoid:LoadAnimation(m2Animation)
-		m2Track.Priority = Enum.AnimationPriority.Action
+		m2Animation.AnimationId = animationId
+		local track = humanoid:LoadAnimation(m2Animation)
+		track.Priority = Enum.AnimationPriority.Action
+		table.insert(m2Tracks, track)
 	end
 
 	return {
 		punch = punchTracks,
 		block = blockTrack,
-		m2 = m2Track,
+		m2 = m2Tracks,
 	}
 end
 
@@ -102,8 +103,12 @@ function TrainingDummy.playBlock(tracks: CombatTracks)
 end
 
 function TrainingDummy.playM2(tracks: CombatTracks)
-	if tracks.m2 then
-		tracks.m2:Play()
+	if tracks.m2 and #tracks.m2 > 0 then
+		local randomIndex = math.random(1, #tracks.m2)
+		local track = tracks.m2[randomIndex]
+		if track then
+			track:Play()
+		end
 	end
 end
 

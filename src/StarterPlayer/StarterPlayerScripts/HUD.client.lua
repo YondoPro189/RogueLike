@@ -295,6 +295,43 @@ player:GetAttributeChangedSignal("Mana"):Connect(updateMana)
 player:GetAttributeChangedSignal("MaxMana"):Connect(updateMana)
 player:GetAttributeChangedSignal("IsChargingMana"):Connect(updateManaChargingVisuals)
 
+-- Perfect Block Screen Effect
+local pbOverlay = Instance.new("Frame")
+pbOverlay.Name = "PerfectBlockOverlay"
+pbOverlay.Size = UDim2.fromScale(1, 1)
+pbOverlay.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+pbOverlay.BackgroundTransparency = 1
+pbOverlay.ZIndex = 100
+pbOverlay.BorderSizePixel = 0
+pbOverlay.Parent = screenGui
+
+local pbTweenIn: Tween? = nil
+local pbTweenOut: Tween? = nil
+
+local function triggerPerfectBlockEffect()
+	if pbTweenIn then pbTweenIn:Cancel() end
+	if pbTweenOut then pbTweenOut:Cancel() end
+
+	pbOverlay.BackgroundTransparency = 1
+	pbOverlay.BackgroundColor3 = Color3.fromRGB(160, 160, 160)
+
+	pbTweenIn = TweenService:Create(pbOverlay, TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 0.55,
+		BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	})
+
+	pbTweenIn.Completed:Connect(function()
+		pbTweenOut = TweenService:Create(pbOverlay, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+			BackgroundTransparency = 1
+		})
+		pbTweenOut:Play()
+	end)
+
+	pbTweenIn:Play()
+end
+
+player:GetAttributeChangedSignal("PerfectBlockTrigger"):Connect(triggerPerfectBlockEffect)
+
 if player.Character then
 	onCharacterAdded(player.Character)
 end
