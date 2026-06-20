@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -15,6 +16,9 @@ local THEME = {
 	HealthLow = Color3.fromRGB(255, 85, 45),
 	HealthBg = Color3.fromRGB(35, 30, 40),
 	Lives = Color3.fromRGB(255, 200, 70),
+	ManaFull = Color3.fromRGB(0, 150, 255),
+	ManaCharging = Color3.fromRGB(0, 220, 255),
+	ManaBg = Color3.fromRGB(20, 25, 35),
 }
 
 local screenGui = Instance.new("ScreenGui")
@@ -28,7 +32,7 @@ local bottomBar = Instance.new("Frame")
 bottomBar.Name = "BottomBar"
 bottomBar.AnchorPoint = Vector2.new(0.5, 1)
 bottomBar.Position = UDim2.new(0.5, 0, 1, -16)
-bottomBar.Size = UDim2.fromOffset(540, 36)
+bottomBar.Size = UDim2.fromOffset(540, 50)
 bottomBar.BackgroundColor3 = THEME.Background
 bottomBar.BackgroundTransparency = THEME.BackgroundTransparency
 bottomBar.BorderSizePixel = 0
@@ -70,13 +74,29 @@ dayLabel.TextXAlignment = Enum.TextXAlignment.Left
 dayLabel.Text = "Day 1"
 dayLabel.Parent = bottomBar
 
--- Barra de HP (centro)
+-- Contenedor de estadísticas (centro, HP + Mana)
+local statsContainer = Instance.new("Frame")
+statsContainer.Name = "StatsContainer"
+statsContainer.LayoutOrder = 2
+statsContainer.Size = UDim2.fromOffset(260, 36)
+statsContainer.BackgroundTransparency = 1
+statsContainer.Parent = bottomBar
+
+local statsLayout = Instance.new("UIListLayout")
+statsLayout.FillDirection = Enum.FillDirection.Vertical
+statsLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+statsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+statsLayout.Padding = UDim.new(0, 4)
+statsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+statsLayout.Parent = statsContainer
+
+-- Barra de HP (dentro de statsContainer)
 local healthContainer = Instance.new("Frame")
 healthContainer.Name = "HealthContainer"
-healthContainer.LayoutOrder = 2
-healthContainer.Size = UDim2.fromOffset(260, 18)
+healthContainer.LayoutOrder = 1
+healthContainer.Size = UDim2.new(1, 0, 0, 16)
 healthContainer.BackgroundTransparency = 1
-healthContainer.Parent = bottomBar
+healthContainer.Parent = statsContainer
 
 local healthBarBg = Instance.new("Frame")
 healthBarBg.Name = "HealthBarBg"
@@ -105,11 +125,52 @@ healthText.Name = "HealthText"
 healthText.Size = UDim2.new(1, 0, 1, 0)
 healthText.BackgroundTransparency = 1
 healthText.Font = Enum.Font.GothamBold
-healthText.TextSize = 12
+healthText.TextSize = 11
 healthText.TextColor3 = THEME.Text
 healthText.Text = "100 / 100"
 healthText.ZIndex = 2
 healthText.Parent = healthContainer
+
+-- Barra de Maná (dentro de statsContainer)
+local manaContainer = Instance.new("Frame")
+manaContainer.Name = "ManaContainer"
+manaContainer.LayoutOrder = 2
+manaContainer.Size = UDim2.new(1, 0, 0, 16)
+manaContainer.BackgroundTransparency = 1
+manaContainer.Parent = statsContainer
+
+local manaBarBg = Instance.new("Frame")
+manaBarBg.Name = "ManaBarBg"
+manaBarBg.Size = UDim2.new(1, 0, 1, 0)
+manaBarBg.BackgroundColor3 = THEME.ManaBg
+manaBarBg.BorderSizePixel = 0
+manaBarBg.Parent = manaContainer
+
+local manaBarBgCorner = Instance.new("UICorner")
+manaBarBgCorner.CornerRadius = UDim.new(0, 4)
+manaBarBgCorner.Parent = manaBarBg
+
+local manaBarFill = Instance.new("Frame")
+manaBarFill.Name = "ManaBarFill"
+manaBarFill.Size = UDim2.new(0, 0, 1, 0)
+manaBarFill.BackgroundColor3 = THEME.ManaFull
+manaBarFill.BorderSizePixel = 0
+manaBarFill.Parent = manaBarBg
+
+local manaBarFillCorner = Instance.new("UICorner")
+manaBarFillCorner.CornerRadius = UDim.new(0, 4)
+manaBarFillCorner.Parent = manaBarFill
+
+local manaText = Instance.new("TextLabel")
+manaText.Name = "ManaText"
+manaText.Size = UDim2.new(1, 0, 1, 0)
+manaText.BackgroundTransparency = 1
+manaText.Font = Enum.Font.GothamBold
+manaText.TextSize = 11
+manaText.TextColor3 = THEME.Text
+manaText.Text = "0 / 100"
+manaText.ZIndex = 2
+manaText.Parent = manaContainer
 
 -- Vidas (derecha)
 local livesLabel = Instance.new("TextLabel")
@@ -195,9 +256,44 @@ local function connectDayValue()
 	dayValue.Changed:Connect(updateDay)
 end
 
+local manaPulseTween: Tween? = nil
+
+local function updateMana()
+	local mana = player:GetAttribute("Mana") or 0
+	local maxMana = player:GetAttribute("MaxMana") or 100
+	local ratio = maxMana > 0 and (mana / maxMana) or 0
+
+	manaText.Text = string.format("%d / %d", math.floor(mana), math.floor(maxMana))
+	manaBarFill.Size = UDim2.new(math.clamp(ratio, 0, 1), 0, 1, 0)
+end
+
+local function updateManaChargingVisuals()
+	local isCharging = player:GetAttribute("IsChargingMana") == true
+	if isCharging then
+		if not manaPulseTween then
+			local tweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+			manaPulseTween = TweenService:Create(manaBarFill, tweenInfo, {
+				BackgroundColor3 = THEME.ManaCharging
+			})
+			manaPulseTween:Play()
+		end
+	else
+		if manaPulseTween then
+			manaPulseTween:Cancel()
+			manaPulseTween = nil
+		end
+		TweenService:Create(manaBarFill, TweenInfo.new(0.2), {
+			BackgroundColor3 = THEME.ManaFull
+		}):Play()
+	end
+end
+
 player:GetAttributeChangedSignal("Lives"):Connect(updateLives)
 player:GetAttributeChangedSignal("Race"):Connect(refreshDayLabel)
 player:GetAttributeChangedSignal("Lineage"):Connect(refreshDayLabel)
+player:GetAttributeChangedSignal("Mana"):Connect(updateMana)
+player:GetAttributeChangedSignal("MaxMana"):Connect(updateMana)
+player:GetAttributeChangedSignal("IsChargingMana"):Connect(updateManaChargingVisuals)
 
 if player.Character then
 	onCharacterAdded(player.Character)
@@ -207,5 +303,7 @@ player.CharacterAdded:Connect(onCharacterAdded)
 
 task.defer(function()
 	updateLives()
+	updateMana()
+	updateManaChargingVisuals()
 	connectDayValue()
 end)

@@ -20,7 +20,12 @@ local function getBaseWalkSpeed(): number
 end
 
 local function getRunWalkSpeed(): number
-	return getBaseWalkSpeed() + Config.RUN_SPEED_BONUS
+	local mana = player:GetAttribute("Mana") or 0
+	if mana > 0 then
+		return getBaseWalkSpeed() + Config.RUN_SPEED_BONUS
+	else
+		return getBaseWalkSpeed() + (Config.RUN_SPEED_BONUS_NO_MANA or 6)
+	end
 end
 
 local function stopRunAnimation()
@@ -35,6 +40,7 @@ local function applyMovementSpeed()
 	end
 
 	local shouldRun = isRunning and isWHeld
+	player:SetAttribute("IsRunning", shouldRun)
 	humanoid.WalkSpeed = shouldRun and getRunWalkSpeed() or getBaseWalkSpeed()
 end
 
@@ -48,6 +54,7 @@ end
 local function setWalkMode()
 	isRunning = false
 	stopRunAnimation()
+	player:SetAttribute("IsRunning", false)
 	applyMovementSpeed()
 end
 
@@ -56,6 +63,7 @@ local function cancelRunFromAttack()
 	awaitingDoubleTap = false
 	cancelSingleTapTimer()
 	stopRunAnimation()
+	player:SetAttribute("IsRunning", false)
 
 	if humanoid and not player:GetAttribute("IsStunned") and not player:GetAttribute("IsRagdolled") then
 		humanoid.WalkSpeed = getBaseWalkSpeed()
@@ -205,6 +213,28 @@ player:GetAttributeChangedSignal("IsRagdolled"):Connect(function()
 	if player:GetAttribute("IsRagdolled") then
 		setWalkMode()
 	elseif humanoid then
+		applyMovementSpeed()
+	end
+end)
+
+player:GetAttributeChangedSignal("IsChargingMana"):Connect(function()
+	if player:GetAttribute("IsChargingMana") then
+		cancelRunFromAttack()
+	elseif humanoid then
+		applyMovementSpeed()
+	end
+end)
+
+player:GetAttributeChangedSignal("IsDashing"):Connect(function()
+	if player:GetAttribute("IsDashing") then
+		cancelRunFromAttack()
+	elseif humanoid then
+		applyMovementSpeed()
+	end
+end)
+
+player:GetAttributeChangedSignal("Mana"):Connect(function()
+	if isRunning and isWHeld then
 		applyMovementSpeed()
 	end
 end)

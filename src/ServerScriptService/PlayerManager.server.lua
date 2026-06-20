@@ -6,6 +6,7 @@ local PlayerStats = require(ReplicatedStorage.Shared.PlayerStats)
 local Races = require(ReplicatedStorage.Shared.Races)
 local RaceAppearances = require(ReplicatedStorage.Shared.RaceAppearances)
 local HumanoidHitbox = require(ReplicatedStorage.Shared.HumanoidHitbox)
+local CombatConfig = require(ReplicatedStorage.Shared.CombatConfig)
 
 local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
 if not remotesFolder then
@@ -42,6 +43,9 @@ local function applyRaceStats(player: Player, character: Model, raceId: string)
 	player:SetAttribute("Lives", stats.Lives)
 	player:SetAttribute("MaxHealth", stats.MaxHealth)
 	player:SetAttribute("WalkSpeed", stats.WalkSpeed)
+	player:SetAttribute("MaxMana", CombatConfig.MAX_MANA)
+	player:SetAttribute("Mana", 0)
+	player:SetAttribute("IsChargingMana", false)
 
 	RaceAppearances.apply(character, raceId)
 	ensurePlayerData(player)

@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local CombatConfig = require(ReplicatedStorage.Shared.CombatConfig)
 local CombatHit = require(ReplicatedStorage.Shared.CombatHit)
@@ -23,9 +24,14 @@ end
 local playerAttackLock: { [Player]: boolean } = {}
 local playerStunned: { [Player]: boolean } = {}
 local playerBlocking: { [Player]: boolean } = {}
+local playerChargingMana: { [Player]: boolean } = {}
+local playerManaReachedMax: { [Player]: boolean } = {}
+local playerDashing: { [Player]: boolean } = {}
+local playerLastDash: { [Player]: number } = {}
+local playerBlockCooldown: { [Player]: number } = {} -- timestamp del último golpe bloqueado
 local playerLastAttack: { [Player]: number } = {}
 local playerLastM2: { [Player]: number } = {}
-local playerCombatTracks: { [Player]: { punch: { AnimationTrack }, m2: AnimationTrack, block: AnimationTrack? } } = {}
+local playerCombatTracks: { [Player]: { punch: { AnimationTrack }, m2: AnimationTrack, block: AnimationTrack?, dash: AnimationTrack? } } = {}
 
 local function loadCombatAnimations(player: Player, character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -56,10 +62,19 @@ local function loadCombatAnimations(player: Player, character: Model)
 		BlockAnimation.configureTrack(blockTrack)
 	end
 
+	local dashTrack: AnimationTrack? = nil
+	if CombatConfig.DASH_ANIMATION ~= "" and not string.find(CombatConfig.DASH_ANIMATION, "PLACEHOLDER") then
+		local dashAnimation = Instance.new("Animation")
+		dashAnimation.AnimationId = CombatConfig.DASH_ANIMATION
+		dashTrack = humanoid:LoadAnimation(dashAnimation)
+		dashTrack.Priority = Enum.AnimationPriority.Action2
+	end
+
 	playerCombatTracks[player] = {
 		punch = punchTracks,
 		m2 = m2Track,
 		block = blockTrack,
+		dash = dashTrack,
 	}
 end
 
@@ -113,6 +128,12 @@ local function canBlock(player: Player): boolean
 		return false
 	end
 
+	-- Cooldown tras recibir un golpe bloqueado
+	local lastBlockHit = playerBlockCooldown[player] or 0
+	if (os.clock() - lastBlockHit) < (CombatConfig.BLOCK_COOLDOWN or 0.4) then
+		return false
+	end
+
 	if player:GetAttribute("IsRagdolled") then
 		return false
 	end
@@ -160,7 +181,146 @@ local function startBlock(player: Player)
 	end
 end
 
+local function isValidAttacker(player: Player): boolean
+	if not player:GetAttribute("Race") then
+		return false
+	end
+
+	if player:GetAttribute("IsRagdolled") then
+		return false
+	end
+
+	local character = player.Character
+	if not character then
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+
+	return true
+end
+
+local function createManaParticles(character: Model): ParticleEmitter?
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return nil
+	end
+
+	local existing = root:FindFirstChild("ManaChargeParticles")
+	if existing then
+		return existing :: ParticleEmitter
+	end
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "ManaChargeParticles"
+	emitter.Texture = "rbxassetid://258129707"
+	emitter.LightEmission = 0.8
+	emitter.LightInfluence = 0
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.4),
+		NumberSequenceKeypoint.new(0.5, 0.8),
+		NumberSequenceKeypoint.new(1, 0)
+	})
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(0.7, 0.5),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	emitter.Color = ColorSequence.new(Color3.fromRGB(0, 180, 255))
+	emitter.Speed = NumberRange.new(2, 4)
+	emitter.Acceleration = Vector3.new(0, 4, 0)
+	emitter.Lifetime = NumberRange.new(0.8, 1.2)
+	emitter.Rate = 40
+	emitter.SpreadAngle = Vector2.new(15, 15)
+	emitter.Parent = root
+	return emitter
+end
+
+local function removeManaParticles(character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+
+	local emitter = root:FindFirstChild("ManaChargeParticles")
+	if emitter then
+		emitter.Enabled = false
+		emitter.Name = "ManaChargeParticles_Draining"
+		task.delay(1.5, function()
+			if emitter and emitter.Parent then
+				emitter:Destroy()
+			end
+		end)
+	end
+end
+
+local function stopManaCharge(player: Player)
+	if not playerChargingMana[player] then
+		return
+	end
+
+	playerChargingMana[player] = nil
+	playerManaReachedMax[player] = nil
+	player:SetAttribute("IsChargingMana", false)
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		if playerBlocking[player] then
+			humanoid.WalkSpeed = CombatConfig.BLOCK_WALK_SPEED
+		else
+			humanoid.WalkSpeed = player:GetAttribute("WalkSpeed") or 16
+		end
+	end
+
+	if character then
+		removeManaParticles(character)
+		character:SetAttribute("IsChargingMana", false)
+	end
+end
+
+local function startManaCharge(player: Player)
+	print("Server: startManaCharge for player", player.Name)
+	if playerChargingMana[player] then
+		print("Server: player is already charging")
+		return
+	end
+
+	if playerStunned[player] or playerBlocking[player] then
+		print("Server: player is stunned or blocking. playerStunned =", playerStunned[player], "playerBlocking =", playerBlocking[player])
+		return
+	end
+
+	if not isValidAttacker(player) then
+		print("Server: player is not a valid attacker (check stats / health / attributes)")
+		return
+	end
+
+	print("Server: player started charging successfully!")
+	playerChargingMana[player] = true
+	playerManaReachedMax[player] = false
+	player:SetAttribute("IsChargingMana", true)
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = CombatConfig.MANA_CHARGE_WALK_SPEED
+	end
+
+	if character then
+		createManaParticles(character)
+		character:SetAttribute("IsChargingMana", true)
+	end
+end
+
 local function applyStun(player: Player, duration: number)
+	if playerChargingMana[player] then
+		stopManaCharge(player)
+	end
+
 	if playerStunned[player] then
 		return
 	end
@@ -202,28 +362,6 @@ local function applyComboEndStun(player: Player)
 	applyStun(player, CombatConfig.COMBO_END_STUN_DURATION)
 end
 
-local function isValidAttacker(player: Player): boolean
-	if not player:GetAttribute("Race") then
-		return false
-	end
-
-	if player:GetAttribute("IsRagdolled") then
-		return false
-	end
-
-	local character = player.Character
-	if not character then
-		return false
-	end
-
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid or humanoid.Health <= 0 then
-		return false
-	end
-
-	return true
-end
-
 local function performHit(attacker: Player, damage: number, shouldRagdoll: boolean?, isM2: boolean?): boolean
 	local character = attacker.Character
 	if not character then
@@ -257,17 +395,26 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
 				if targetPlayer then
 					print("[Rogue2]", attacker.Name, "golpeó a", targetPlayer.Name, "por", finalDamage)
+					if playerBlocking[targetPlayer] then
+						endBlock(targetPlayer)
+						playerBlockCooldown[targetPlayer] = os.clock()
+					end
 				elseif targetModel:GetAttribute("IsTrainingDummy") then
 					print("[Rogue2]", attacker.Name, "golpeó a", targetModel.Name, "por", finalDamage)
+					if targetModel:GetAttribute("IsBlocking") then
+						targetModel:SetAttribute("IsBlocking", false)
+					end
 				end
 			end
 		end
 
 		if blockBroken then
+			-- M2 rompe el bloqueo: stun completo
 			if targetModel then
 				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
 				if targetPlayer then
 					endBlock(targetPlayer)
+					playerBlockCooldown[targetPlayer] = os.clock()
 					applyStun(targetPlayer, CombatConfig.BLOCK_BREAK_STUN_DURATION)
 				else
 					-- Dummy / NPC
@@ -282,6 +429,17 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 					task.delay(CombatConfig.BLOCK_BREAK_STUN_DURATION, function()
 						targetModel:SetAttribute("IsStunned", false)
 					end)
+				end
+			end
+		elseif isBlockedFromFront and not isM2 then
+			-- Golpe normal bloqueado desde el frente: romper bloqueo + cooldown corto
+			if targetModel then
+				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+				if targetPlayer then
+					endBlock(targetPlayer)
+					playerBlockCooldown[targetPlayer] = os.clock()
+				else
+					targetModel:SetAttribute("IsBlocking", false)
 				end
 			end
 		elseif shouldRagdoll and CombatHit.shouldRagdollBlockedTarget(humanoid, character) then
@@ -321,9 +479,68 @@ combatRemote.OnServerEvent:Connect(function(player: Player, attackType: string, 
 	elseif attackType == "BlockEnd" then
 		endBlock(player)
 		return
+	elseif attackType == "ManaChargeStart" then
+		print("Server: received ManaChargeStart from", player.Name)
+		startManaCharge(player)
+		return
+	elseif attackType == "ManaChargeEnd" then
+		print("Server: received ManaChargeEnd from", player.Name)
+		stopManaCharge(player)
+		return
+	elseif attackType == "Dash" then
+		-- Validar dash
+		if playerDashing[player] or playerStunned[player] or playerBlocking[player]
+			or playerAttackLock[player] then
+			return
+		end
+
+		if player:GetAttribute("IsRagdolled") then
+			return
+		end
+
+		if not isValidAttacker(player) then
+			return
+		end
+
+		local now = os.clock()
+		local lastDash = playerLastDash[player] or 0
+		if (now - lastDash) < CombatConfig.DASH_COOLDOWN then
+			return
+		end
+
+		playerDashing[player] = true
+		playerLastDash[player] = now
+		player:SetAttribute("IsDashing", true)
+
+		-- Cancelar carga de maná si estaba activa
+		if playerChargingMana[player] then
+			stopManaCharge(player)
+		end
+
+		local character = player.Character
+		if character then
+			character:SetAttribute("IsDashing", true)
+		end
+
+		-- Reproducir animación de dash para replicación
+		local tracks = playerCombatTracks[player]
+		if tracks and tracks.dash then
+			tracks.dash:Play()
+		end
+
+		task.delay(CombatConfig.DASH_DURATION, function()
+			playerDashing[player] = nil
+			player:SetAttribute("IsDashing", false)
+
+			local currentCharacter = player.Character
+			if currentCharacter then
+				currentCharacter:SetAttribute("IsDashing", false)
+			end
+		end)
+		return
 	end
 
-	if playerAttackLock[player] or playerStunned[player] or playerBlocking[player] then
+	if playerAttackLock[player] or playerStunned[player] or playerBlocking[player] or playerDashing[player] then
 		return
 	end
 
@@ -396,6 +613,11 @@ Players.PlayerRemoving:Connect(function(player)
 	playerAttackLock[player] = nil
 	playerStunned[player] = nil
 	playerBlocking[player] = nil
+	playerChargingMana[player] = nil
+	playerManaReachedMax[player] = nil
+	playerBlockCooldown[player] = nil
+	playerDashing[player] = nil
+	playerLastDash[player] = nil
 	CombatHit.setPlayerBlocking(player, false)
 	playerLastAttack[player] = nil
 	playerLastM2[player] = nil
@@ -405,6 +627,7 @@ end)
 local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function(character)
 		endBlock(player)
+		stopManaCharge(player)
 		loadCombatAnimations(player, character)
 		Ragdoll.cleanupCharacter(character)
 	end)
@@ -437,5 +660,42 @@ end
 breakBlockEvent.Event:Connect(function(targetPlayer: Player, duration: number)
 	endBlock(targetPlayer)
 	applyStun(targetPlayer, duration)
+end)
+
+RunService.Heartbeat:Connect(function(dt)
+	for _, player in Players:GetPlayers() do
+		local maxMana = player:GetAttribute("MaxMana") or CombatConfig.MAX_MANA or 100
+		local currentMana = player:GetAttribute("Mana") or 0
+		local isCharging = playerChargingMana[player] == true
+
+		-- Validate if they can actually charge
+		if isCharging then
+			if not isValidAttacker(player) or playerBlocking[player] then
+				stopManaCharge(player)
+				isCharging = false
+			end
+		end
+
+		if isCharging then
+			if playerManaReachedMax[player] then
+				-- Max reached, drain mana
+				currentMana = math.max(0, currentMana - dt * (maxMana / CombatConfig.MANA_DRAIN_TIME))
+			else
+				-- Charge mana
+				currentMana = currentMana + dt * (maxMana / CombatConfig.MANA_CHARGE_TIME)
+				if currentMana >= maxMana then
+					currentMana = maxMana
+					playerManaReachedMax[player] = true
+				end
+			end
+			player:SetAttribute("Mana", currentMana)
+		else
+			-- Not charging, drain mana
+			if currentMana > 0 then
+				currentMana = math.max(0, currentMana - dt * (maxMana / CombatConfig.MANA_DRAIN_TIME))
+				player:SetAttribute("Mana", currentMana)
+			end
+		end
+	end
 end)
 

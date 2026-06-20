@@ -51,5 +51,18 @@ return {
 	BLOCK_WALK_SPEED = 5,
 	BLOCK_DAMAGE_MULTIPLIER = 0, -- 0 = inmunidad al bloquear (jugadores: siempre; dummies: desde el frente)
 	BLOCK_BREAK_STUN_DURATION = 1, -- Duración del stun al romper el bloqueo
-	BLOCK_ANGLE = 100, -- Ángulo del bloqueo en grados por el frente
+	BLOCK_ANGLE = 130, -- Ángulo del bloqueo en grados por el frente
+	BLOCK_COOLDOWN = 0.4, -- Cooldown en segundos para volver a bloquear tras recibir un golpe bloqueado
+
+	-- Maná (mantener G)
+	MANA_CHARGE_TIME = 2, -- Segundos para cargar al máximo (100) desde 0
+	MANA_DRAIN_TIME = 3, -- Segundos para bajar de máximo a 0
+	MAX_MANA = 100,
+	MANA_CHARGE_WALK_SPEED = 6,
+
+	-- Dash (tecla Q)
+	DASH_COOLDOWN = 1.5, -- Segundos entre dashes
+	DASH_DISTANCE = 15, -- Studs que recorre
+	DASH_DURATION = 0.25, -- Duración del dash en segundos
+	DASH_ANIMATION = "rbxassetid://PLACEHOLDER", -- Animación de dash (reemplazar con asset real)
 }
