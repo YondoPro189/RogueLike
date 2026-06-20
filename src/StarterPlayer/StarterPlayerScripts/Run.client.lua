@@ -30,7 +30,7 @@ local function stopRunAnimation()
 end
 
 local function applyMovementSpeed()
-	if not humanoid or player:GetAttribute("IsAttacking") or player:GetAttribute("IsStunned") or player:GetAttribute("IsRagdolled") then
+	if not humanoid or player:GetAttribute("IsAttacking") or player:GetAttribute("IsBlocking") or player:GetAttribute("IsStunned") or player:GetAttribute("IsRagdolled") then
 		return
 	end
 
@@ -63,7 +63,7 @@ local function cancelRunFromAttack()
 end
 
 local function setRunMode()
-	if player:GetAttribute("IsAttacking") or player:GetAttribute("IsStunned") or player:GetAttribute("IsRagdolled") then
+	if player:GetAttribute("IsAttacking") or player:GetAttribute("IsBlocking") or player:GetAttribute("IsStunned") or player:GetAttribute("IsRagdolled") then
 		return
 	end
 
@@ -72,7 +72,7 @@ local function setRunMode()
 end
 
 local function onWPressed()
-	if player:GetAttribute("IsAttacking") then
+	if player:GetAttribute("IsAttacking") or player:GetAttribute("IsBlocking") then
 		return
 	end
 
@@ -128,10 +128,10 @@ local function bindHumanoidSignals()
 			return
 		end
 
-		if speed >= 10 and isRunning and isWHeld and not player:GetAttribute("IsAttacking") and not runTrack.IsPlaying then
+		if speed >= 10 and isRunning and isWHeld and not player:GetAttribute("IsAttacking") and not player:GetAttribute("IsBlocking") and not runTrack.IsPlaying then
 			runTrack:Play()
 			applyMovementSpeed()
-		elseif speed >= 10 and (not isRunning or not isWHeld or player:GetAttribute("IsAttacking")) and runTrack.IsPlaying then
+		elseif speed >= 10 and (not isRunning or not isWHeld or player:GetAttribute("IsAttacking") or player:GetAttribute("IsBlocking")) and runTrack.IsPlaying then
 			stopRunAnimation()
 			applyMovementSpeed()
 		elseif speed < 10 and runTrack.IsPlaying then
@@ -174,8 +174,16 @@ player:GetAttributeChangedSignal("CancelRunRequest"):Connect(function()
 	cancelRunFromAttack()
 end)
 
+player:GetAttributeChangedSignal("IsBlocking"):Connect(function()
+	if player:GetAttribute("IsBlocking") then
+		cancelRunFromAttack()
+	elseif humanoid then
+		applyMovementSpeed()
+	end
+end)
+
 player:GetAttributeChangedSignal("IsAttacking"):Connect(function()
-	if player:GetAttribute("IsAttacking") then
+	if player:GetAttribute("IsAttacking") or player:GetAttribute("IsBlocking") then
 		cancelRunFromAttack()
 	elseif humanoid then
 		applyMovementSpeed()

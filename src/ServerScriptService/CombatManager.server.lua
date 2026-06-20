@@ -2,7 +2,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CombatConfig = require(ReplicatedStorage.Shared.CombatConfig)
-local HumanoidHitbox = require(ReplicatedStorage.Shared.HumanoidHitbox)
+local CombatHit = require(ReplicatedStorage.Shared.CombatHit)
+local BlockAnimation = require(ReplicatedStorage.Shared.BlockAnimation)
 local Ragdoll = require(ReplicatedStorage.Shared.Ragdoll)
 
 local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
@@ -21,9 +22,10 @@ end
 
 local playerAttackLock: { [Player]: boolean } = {}
 local playerStunned: { [Player]: boolean } = {}
+local playerBlocking: { [Player]: boolean } = {}
 local playerLastAttack: { [Player]: number } = {}
 local playerLastM2: { [Player]: number } = {}
-local playerCombatTracks: { [Player]: { punch: { AnimationTrack }, m2: AnimationTrack } } = {}
+local playerCombatTracks: { [Player]: { punch: { AnimationTrack }, m2: AnimationTrack, block: AnimationTrack? } } = {}
 
 local function loadCombatAnimations(player: Player, character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -46,9 +48,18 @@ local function loadCombatAnimations(player: Player, character: Model)
 	local m2Track = humanoid:LoadAnimation(m2Animation)
 	m2Track.Priority = Enum.AnimationPriority.Action
 
+	local blockTrack: AnimationTrack? = nil
+	if CombatConfig.BLOCK_ANIMATION ~= "" then
+		local blockAnimation = Instance.new("Animation")
+		blockAnimation.AnimationId = CombatConfig.BLOCK_ANIMATION
+		blockTrack = humanoid:LoadAnimation(blockAnimation)
+		BlockAnimation.configureTrack(blockTrack)
+	end
+
 	playerCombatTracks[player] = {
 		punch = punchTracks,
 		m2 = m2Track,
+		block = blockTrack,
 	}
 end
 
@@ -65,6 +76,87 @@ local function playCombatAnimation(player: Player, attackType: string, comboInde
 		end
 	elseif attackType == "M2" then
 		tracks.m2:Play()
+	elseif attackType == "Block" and tracks.block then
+		BlockAnimation.play(tracks.block)
+	end
+end
+
+local function stopBlockAnimation(player: Player)
+	local tracks = playerCombatTracks[player]
+	if tracks and tracks.block and tracks.block.IsPlaying then
+		BlockAnimation.stop(tracks.block)
+	end
+end
+
+local function setBlockingState(player: Player, isBlocking: boolean)
+	local character = player.Character
+
+	if isBlocking then
+		playerBlocking[player] = true
+		CombatHit.setPlayerBlocking(player, true)
+		player:SetAttribute("IsBlocking", true)
+		if character then
+			character:SetAttribute("IsBlocking", true)
+		end
+	else
+		playerBlocking[player] = nil
+		CombatHit.setPlayerBlocking(player, false)
+		player:SetAttribute("IsBlocking", false)
+		if character then
+			character:SetAttribute("IsBlocking", false)
+		end
+	end
+end
+
+local function canBlock(player: Player): boolean
+	if playerStunned[player] or playerBlocking[player] then
+		return false
+	end
+
+	if player:GetAttribute("IsRagdolled") then
+		return false
+	end
+
+	local character = player.Character
+	if not character then
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	return humanoid ~= nil and humanoid.Health > 0
+end
+
+local function endBlock(player: Player)
+	if not playerBlocking[player] then
+		return
+	end
+
+	setBlockingState(player, false)
+	stopBlockAnimation(player)
+
+	if playerStunned[player] then
+		return
+	end
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = player:GetAttribute("WalkSpeed") or 16
+	end
+end
+
+local function startBlock(player: Player)
+	if not canBlock(player) then
+		return
+	end
+
+	setBlockingState(player, true)
+	playCombatAnimation(player, "Block")
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = CombatConfig.BLOCK_WALK_SPEED
 	end
 end
 
@@ -120,90 +212,6 @@ local function isValidAttacker(player: Player): boolean
 	return true
 end
 
-local function getAttackHitbox(attackerCharacter: Model): (CFrame?, Vector3?)
-	local root = attackerCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not root then
-		return nil, nil
-	end
-
-	local torso = attackerCharacter:FindFirstChild("Torso") or attackerCharacter:FindFirstChild("UpperTorso")
-	local yAdjust = if torso and torso:IsA("BasePart") then torso.Position.Y - root.Position.Y else 0
-
-	local size = CombatConfig.HITBOX_SIZE
-	local forwardOffset = CombatConfig.HITBOX_OFFSET + size.Z / 2
-	local hitboxCFrame = root.CFrame * CFrame.new(0, yAdjust, -forwardOffset)
-
-	return hitboxCFrame, size
-end
-
-local function getTargetsInFront(attackerCharacter: Model): { Humanoid }
-	local hitboxCFrame, size = getAttackHitbox(attackerCharacter)
-	if not hitboxCFrame or not size then
-		return {}
-	end
-
-	local overlapParams = OverlapParams.new()
-	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
-	overlapParams.FilterDescendantsInstances = { attackerCharacter }
-
-	local hitHumanoids: { Humanoid } = {}
-	local alreadyHit: { [Humanoid]: boolean } = {}
-
-	for _, part in workspace:GetPartBoundsInBox(hitboxCFrame, size, overlapParams) do
-		local model = part:FindFirstAncestorOfClass("Model")
-		if not model or model == attackerCharacter then
-			continue
-		end
-
-		if model:FindFirstChild("Left Arm") and not model:FindFirstChild("CombatHitbox_LeftArm") then
-			HumanoidHitbox.setup(model)
-		end
-
-		local humanoid = model:FindFirstChildOfClass("Humanoid")
-		if not humanoid or alreadyHit[humanoid] or humanoid.Health <= 0 then
-			continue
-		end
-
-		alreadyHit[humanoid] = true
-		table.insert(hitHumanoids, humanoid)
-	end
-
-	return hitHumanoids
-end
-
-local function applyDamage(attacker: Player, humanoid: Humanoid, damage: number)
-	if damage <= 0 then
-		return
-	end
-
-	humanoid:TakeDamage(damage)
-
-	local targetModel = humanoid.Parent
-	if targetModel then
-		local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
-		if targetPlayer then
-			print("[Rogue2]", attacker.Name, "golpeó a", targetPlayer.Name, "por", damage)
-		end
-	end
-end
-
-local function applyRagdollToTarget(attackerCharacter: Model, targetHumanoid: Humanoid)
-	local targetModel = targetHumanoid.Parent
-	if not targetModel then
-		return
-	end
-
-	local attackerRoot = attackerCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
-	local targetRoot = targetModel:FindFirstChild("HumanoidRootPart") :: BasePart?
-
-	local direction = Vector3.new(0, 0, -1)
-	if attackerRoot and targetRoot then
-		direction = (targetRoot.Position - attackerRoot.Position).Unit
-	end
-
-	Ragdoll.apply(targetModel, CombatConfig.RAGDOLL_DURATION, direction, CombatConfig.RAGDOLL_KNOCKBACK_DISTANCE)
-end
-
 local function performHit(attacker: Player, damage: number, shouldRagdoll: boolean?): boolean
 	local character = attacker.Character
 	if not character then
@@ -211,13 +219,38 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 	end
 
 	local hitAny = false
-	local targets = getTargetsInFront(character)
+	local targets = CombatHit.getTargetsInFront(character)
 	for _, humanoid in targets do
 		hitAny = true
-		applyDamage(attacker, humanoid, damage)
 
-		if shouldRagdoll then
-			applyRagdollToTarget(character, humanoid)
+		local finalDamage = math.floor(damage * CombatHit.getBlockDamageMultiplier(humanoid, character))
+		if finalDamage > 0 then
+			humanoid:TakeDamage(finalDamage)
+
+			local targetModel = humanoid.Parent
+			if targetModel then
+				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+				if targetPlayer then
+					print("[Rogue2]", attacker.Name, "golpeó a", targetPlayer.Name, "por", finalDamage)
+				elseif targetModel:GetAttribute("IsTrainingDummy") then
+					print("[Rogue2]", attacker.Name, "golpeó a", targetModel.Name, "por", finalDamage)
+				end
+			end
+		end
+
+		if shouldRagdoll and CombatHit.shouldRagdollBlockedTarget(humanoid, character) then
+			local targetModel = humanoid.Parent
+			if targetModel then
+				local attackerRoot = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+				local targetRoot = targetModel:FindFirstChild("HumanoidRootPart") :: BasePart?
+
+				local direction = Vector3.new(0, 0, -1)
+				if attackerRoot and targetRoot then
+					direction = (targetRoot.Position - attackerRoot.Position).Unit
+				end
+
+				Ragdoll.apply(targetModel, CombatConfig.RAGDOLL_DURATION, direction, CombatConfig.RAGDOLL_KNOCKBACK_DISTANCE)
+			end
 		end
 	end
 
@@ -237,7 +270,15 @@ local function canM2(player: Player): boolean
 end
 
 combatRemote.OnServerEvent:Connect(function(player: Player, attackType: string, comboIndex: number?)
-	if playerAttackLock[player] or playerStunned[player] then
+	if attackType == "BlockStart" then
+		startBlock(player)
+		return
+	elseif attackType == "BlockEnd" then
+		endBlock(player)
+		return
+	end
+
+	if playerAttackLock[player] or playerStunned[player] or playerBlocking[player] then
 		return
 	end
 
@@ -309,6 +350,8 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	playerAttackLock[player] = nil
 	playerStunned[player] = nil
+	playerBlocking[player] = nil
+	CombatHit.setPlayerBlocking(player, false)
 	playerLastAttack[player] = nil
 	playerLastM2[player] = nil
 	playerCombatTracks[player] = nil
@@ -316,6 +359,7 @@ end)
 
 local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function(character)
+		endBlock(player)
 		loadCombatAnimations(player, character)
 		Ragdoll.cleanupCharacter(character)
 	end)

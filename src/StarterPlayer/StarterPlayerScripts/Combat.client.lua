@@ -12,6 +12,7 @@ local comboIndex = 0
 local lastComboTime = 0
 local lastM2Time = 0
 local isAttacking = false
+local isBlocking = false
 local isStunned = false
 local currentCharacter: Model? = nil
 local currentHumanoid: Humanoid? = nil
@@ -28,6 +29,18 @@ local function canFight(): boolean
 		and currentHumanoid ~= nil
 		and currentHumanoid.Health > 0
 		and not isAttacking
+		and not isBlocking
+		and not isStunned
+		and not player:GetAttribute("IsStunned")
+		and not player:GetAttribute("IsRagdolled")
+end
+
+local function canBlock(): boolean
+	return player:GetAttribute("Race") ~= nil
+		and currentHumanoid ~= nil
+		and currentHumanoid.Health > 0
+		and not isAttacking
+		and not isBlocking
 		and not isStunned
 		and not player:GetAttribute("IsStunned")
 		and not player:GetAttribute("IsRagdolled")
@@ -169,7 +182,53 @@ local function performM2()
 	beginAttack(CombatConfig.M2_ATTACK_DURATION, false, true)
 end
 
+local function applyBlockingState(blocking: boolean)
+	if blocking then
+		if isBlocking then
+			return
+		end
+
+		isBlocking = true
+		stopCurrentAttackAnimation()
+		requestCancelRun()
+
+		if currentHumanoid then
+			currentHumanoid.WalkSpeed = CombatConfig.BLOCK_WALK_SPEED
+		end
+	else
+		if not isBlocking then
+			return
+		end
+
+		isBlocking = false
+
+		if currentHumanoid and not isStunned and not isAttacking then
+			restoreWalkSpeed()
+		end
+	end
+end
+
+local function stopBlocking()
+	combatRemote:FireServer("BlockEnd")
+end
+
+local function startBlocking()
+	if not canBlock() then
+		return
+	end
+
+	combatRemote:FireServer("BlockStart")
+end
+
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if input.KeyCode == Enum.KeyCode.F then
+		if gameProcessed then
+			return
+		end
+		startBlocking()
+		return
+	end
+
 	local isAttackInput = input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.MouseButton2
 
@@ -184,6 +243,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 end)
 
+UserInputService.InputEnded:Connect(function(input, _gameProcessed)
+	if input.KeyCode == Enum.KeyCode.F then
+		stopBlocking()
+	end
+end)
+
 local function onCharacterAdded(character: Model)
 	currentCharacter = character
 	currentHumanoid = character:WaitForChild("Humanoid") :: Humanoid
@@ -191,6 +256,7 @@ local function onCharacterAdded(character: Model)
 	lastComboTime = 0
 	lastM2Time = 0
 	isAttacking = false
+	isBlocking = false
 	isStunned = false
 	stopCurrentAttackAnimation()
 	player:SetAttribute("IsAttacking", false)
@@ -208,9 +274,23 @@ player.CharacterAdded:Connect(onCharacterAdded)
 player:GetAttributeChangedSignal("IsStunned"):Connect(function()
 	isStunned = player:GetAttribute("IsStunned") == true
 
+	if isStunned then
+		stopBlocking()
+	end
+
 	if isStunned and currentHumanoid then
 		currentHumanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED
-	elseif currentHumanoid and not isAttacking then
+	elseif currentHumanoid and not isAttacking and not isBlocking then
 		restoreWalkSpeed()
 	end
+end)
+
+player:GetAttributeChangedSignal("IsRagdolled"):Connect(function()
+	if player:GetAttribute("IsRagdolled") then
+		stopBlocking()
+	end
+end)
+
+player:GetAttributeChangedSignal("IsBlocking"):Connect(function()
+	applyBlockingState(player:GetAttribute("IsBlocking") == true)
 end)
