@@ -5,7 +5,7 @@ local CombatConfig = require(ReplicatedStorage.Shared.CombatConfig)
 local BlockAnimation = require(ReplicatedStorage.Shared.BlockAnimation)
 local HumanoidHitbox = require(ReplicatedStorage.Shared.HumanoidHitbox)
 
-export type DummyBehavior = "Idle" | "Blocking" | "Attacking" | "AttackingM2"
+export type DummyBehavior = "Idle" | "Blocking" | "Attacking" | "AttackingM2" | "AttackingCombo"
 
 export type CombatTracks = {
 	punch: { AnimationTrack },

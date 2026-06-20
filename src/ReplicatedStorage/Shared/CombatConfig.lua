@@ -15,7 +15,7 @@ return {
 	},
 	M2_ANIMATIONS = {
 		"rbxassetid://113107178491591",
-		"rbxassetid://109743750628416",
+		"rbxassetid://102278240593607",
 	},
 	BLOCK_ANIMATION = "rbxassetid://77309514167712",
 	BLOCK_ANIMATION_PRIORITY = Enum.AnimationPriority.Action2,
@@ -41,6 +41,7 @@ return {
 
 	-- Stun al completar el combo de 5 golpes o M2 (segundos)
 	COMBO_END_STUN_DURATION = 0.65,
+	HIT_STUN_DURATION = 0.35, -- Duración del stun al recibir un golpe normal (M1)
 	STUN_WALK_SPEED = 0,
 
 	-- Ragdoll al conectar golpe final (M1 x5) o M2
@@ -67,7 +68,7 @@ return {
 
 	-- Dash (tecla Q)
 	DASH_COOLDOWN = 1.5, -- Segundos entre dashes
-	DASH_DISTANCE = 12, -- Studs que recorre
+	DASH_DISTANCE = 20, -- Studs que recorre
 	DASH_DURATION = 0.25, -- Duración del dash en segundos
 	DASH_ANIMATION = "rbxassetid://75611214871700", -- Animación de dash normal
 	DASH_ANIMATION_RIGHT = "rbxassetid://132024206838246", -- Flip derecha (shiftlock)

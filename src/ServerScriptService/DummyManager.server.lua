@@ -11,30 +11,36 @@ local DUMMY_SPAWNS = {
 	{
 		name = "DummyIdle",
 		behavior = "Idle" :: TrainingDummy.DummyBehavior,
-		position = Vector3.new(0, 5, 18),
+		position = Vector3.new(0, 5, 20),
 		color = "Medium stone grey",
 	},
 	{
 		name = "DummyBlocking",
 		behavior = "Blocking" :: TrainingDummy.DummyBehavior,
-		position = Vector3.new(10, 5, 18),
+		position = Vector3.new(12, 5, 20),
 		color = "Bright blue",
 	},
 	{
 		name = "DummyAttacking",
 		behavior = "Attacking" :: TrainingDummy.DummyBehavior,
-		position = Vector3.new(-10, 5, 18),
+		position = Vector3.new(-12, 5, 20),
 		color = "Bright red",
 	},
 	{
 		name = "DummyAttackingM2",
 		behavior = "AttackingM2" :: TrainingDummy.DummyBehavior,
-		position = Vector3.new(-20, 5, 18),
+		position = Vector3.new(-24, 5, 20),
 		color = "Dark orange",
+	},
+	{
+		name = "DummyCombo",
+		behavior = "AttackingCombo" :: TrainingDummy.DummyBehavior,
+		position = Vector3.new(-36, 5, 20),
+		color = "Deep orange",
 	},
 }
 
-local ATTACK_RANGE = 14
+local ATTACK_RANGE = 7 -- Rango reducido para coincidir con la hitbox del jugador (HITBOX_SIZE.Z + HITBOX_OFFSET = 6.3)
 local ATTACK_COMBO_INDEX = 1
 
 local dummiesFolder: Folder
@@ -58,9 +64,13 @@ end
 local function resetDummy(model: Model, spawnCFrame: CFrame)
 	Ragdoll.restore(model)
 
+	model:SetAttribute("IsStunned", false)
+	model:SetAttribute("IsBlocking", false)
+
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		humanoid.Health = humanoid.MaxHealth
+		humanoid.WalkSpeed = model:GetAttribute("WalkSpeed") or 16
 	end
 
 	model:PivotTo(spawnCFrame)
@@ -201,7 +211,7 @@ local function dummyAttack(model: Model, tracks: TrainingDummy.CombatTracks, dam
 	TrainingDummy.playPunch(tracks, ATTACK_COMBO_INDEX)
 
 	task.delay(CombatConfig.PUNCH_HIT_DELAY, function()
-		if not model.Parent then
+		if not model.Parent or model:GetAttribute("IsStunned") or model:GetAttribute("IsRagdolled") or Ragdoll.isActive(model) then
 			return
 		end
 
@@ -264,7 +274,7 @@ local function dummyAttackM2(model: Model, tracks: TrainingDummy.CombatTracks, d
 	TrainingDummy.playM2(tracks)
 
 	task.delay(CombatConfig.M2_HIT_DELAY, function()
-		if not model.Parent or humanoid.Health <= 0 then
+		if not model.Parent or humanoid.Health <= 0 or model:GetAttribute("IsStunned") or model:GetAttribute("IsRagdolled") or Ragdoll.isActive(model) then
 			return
 		end
 
@@ -300,6 +310,73 @@ local function setupAttackingM2Dummy(model: Model, tracks: TrainingDummy.CombatT
 	end)
 end
 
+local function setupAttackingComboDummy(model: Model, tracks: TrainingDummy.CombatTracks)
+	task.spawn(function()
+		while model.Parent do
+			task.wait(3.5) -- Pausa entre combos
+			if not model.Parent then
+				break
+			end
+
+			for comboStep = 1, 5 do
+				if model:GetAttribute("IsStunned") or model:GetAttribute("IsRagdolled") or Ragdoll.isActive(model) then
+					break -- Si es interrumpido por stun, cancela el resto del combo
+				end
+
+				local root = model:FindFirstChild("HumanoidRootPart") :: BasePart?
+				if not root then
+					break
+				end
+
+				local nearestPlayer = getNearestPlayerInRange(root.Position, ATTACK_RANGE)
+				if nearestPlayer and nearestPlayer.Character then
+					local targetRoot = nearestPlayer.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+					if targetRoot then
+						faceTarget(model, targetRoot.Position)
+					end
+				end
+
+				-- Ejecutar ataque individual del combo
+				TrainingDummy.playPunch(tracks, comboStep)
+				
+				local damage = CombatConfig.PUNCH_DAMAGE[comboStep] or 5
+				local isFinisher = comboStep == 5
+
+				task.delay(CombatConfig.PUNCH_HIT_DELAY, function()
+					if not model.Parent or model:GetAttribute("IsStunned") or model:GetAttribute("IsRagdolled") or Ragdoll.isActive(model) then
+						return
+					end
+
+					for _, targetHumanoid in CombatHit.getTargetsInFront(model) do
+						local targetModel = targetHumanoid.Parent
+						if not targetModel or not Players:GetPlayerFromCharacter(targetModel) then
+							continue
+						end
+
+						if isFinisher then
+							-- El golpe 5 hace knockback y ragdoll
+							CombatHit.applyDamage(
+								model,
+								targetHumanoid,
+								damage,
+								true,
+								CombatConfig.RAGDOLL_DURATION,
+								CombatConfig.RAGDOLL_KNOCKBACK_DISTANCE,
+								false
+							)
+						else
+							-- Golpes 1 a 4 hacen daño y stun básico
+							CombatHit.applyDamage(model, targetHumanoid, damage, false)
+						end
+					end
+				end)
+
+				task.wait(CombatConfig.PUNCH_COOLDOWN)
+			end
+		end
+	end)
+end
+
 local function spawnDummy(config: typeof(DUMMY_SPAWNS[1]))
 	local model = TrainingDummy.create(config.name, config.position, config.behavior, config.color)
 	local spawnCFrame = model:GetPivot()
@@ -320,6 +397,8 @@ local function spawnDummy(config: typeof(DUMMY_SPAWNS[1]))
 		setupAttackingDummy(model, tracks)
 	elseif config.behavior == "AttackingM2" then
 		setupAttackingM2Dummy(model, tracks)
+	elseif config.behavior == "AttackingCombo" then
+		setupAttackingComboDummy(model, tracks)
 	end
 
 	print("[Rogue2] Dummy de entrenamiento:", config.name, "→", config.behavior)
@@ -348,10 +427,11 @@ local function positionDummiesNearPlayer(character: Model)
 
 	-- Offsets for each dummy behavior relative to player
 	local offsets = {
-		Idle = CFrame.new(12, 0, -15),
-		Blocking = CFrame.new(4, 0, -15),
-		Attacking = CFrame.new(-4, 0, -15),
-		AttackingM2 = CFrame.new(-12, 0, -15),
+		Idle = CFrame.new(24, 0, -18),
+		Blocking = CFrame.new(8, 0, -18),
+		Attacking = CFrame.new(-8, 0, -18),
+		AttackingM2 = CFrame.new(-24, 0, -18),
+		AttackingCombo = CFrame.new(-40, 0, -18),
 	}
 
 	-- Find all dummies in the folder and reposition them

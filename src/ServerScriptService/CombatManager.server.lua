@@ -454,11 +454,32 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 					if playerBlocking[targetPlayer] then
 						endBlock(targetPlayer)
 						playerBlockCooldown[targetPlayer] = os.clock()
+					else
+						-- Si el golpe conecta y no estaba bloqueando, aplicar hit stun
+						-- Nota: El combo finisher (comboIndex == 5) o M2 ya aplican un stun mayor/ragdoll más adelante,
+						-- pero para golpes comunes (1 a 4) aplicamos HIT_STUN_DURATION.
+						if not shouldRagdoll then
+							applyStun(targetPlayer, CombatConfig.HIT_STUN_DURATION or 0.35)
+						end
 					end
 				elseif targetModel:GetAttribute("IsTrainingDummy") then
 					print("[Rogue2]", attacker.Name, "golpeó a", targetModel.Name, "por", finalDamage)
 					if targetModel:GetAttribute("IsBlocking") then
 						targetModel:SetAttribute("IsBlocking", false)
+					else
+						if not shouldRagdoll then
+							targetModel:SetAttribute("IsStunned", true)
+							local targetHumanoid = targetModel:FindFirstChildOfClass("Humanoid")
+							if targetHumanoid then
+								targetHumanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED
+							end
+							task.delay(CombatConfig.HIT_STUN_DURATION or 0.35, function()
+								targetModel:SetAttribute("IsStunned", false)
+								if targetHumanoid and targetHumanoid.Health > 0 then
+									targetHumanoid.WalkSpeed = targetModel:GetAttribute("WalkSpeed") or 16
+								end
+							end)
+						end
 					end
 				end
 			end
@@ -592,17 +613,9 @@ combatRemote.OnServerEvent:Connect(function(player: Player, attackType: string, 
 		local tracks = playerCombatTracks[player]
 		if tracks then
 			local direction = comboIndex :: any
-			local trackToPlay = tracks.dash
-			local isBack = direction == "Back" or direction == "BackLeft" or direction == "BackRight"
-			local isRight = direction == "Right" or direction == "ForwardRight" or direction == "BackRight"
-			local isLeft = direction == "Left" or direction == "ForwardLeft" or direction == "BackLeft"
-
-			if isBack and tracks.dashBack then
+			-- TEST: Forzar animación back dash en todos los dashes
+			if tracks.dashBack then
 				trackToPlay = tracks.dashBack
-			elseif isRight and tracks.dashRight then
-				trackToPlay = tracks.dashRight
-			elseif isLeft and tracks.dashLeft then
-				trackToPlay = tracks.dashLeft
 			end
 
 			if trackToPlay then

@@ -398,6 +398,23 @@ local function getCameraBasedDashDirection(): Vector3
 	return worldDir
 end
 
+-- Devuelve el WorldDir sólo si hay alguna tecla WASD presionada, sino nil
+local function getCurrentInputWorldDir(): Vector3?
+	local w = UserInputService:IsKeyDown(Enum.KeyCode.W)
+	local a = UserInputService:IsKeyDown(Enum.KeyCode.A)
+	local s = UserInputService:IsKeyDown(Enum.KeyCode.S)
+	local d = UserInputService:IsKeyDown(Enum.KeyCode.D)
+	if not w and not a and not s and not d then
+		return nil -- sin input: mantener última dirección
+	end
+	return getCameraBasedDashDirection()
+end
+
+local function selectDashTrack(_direction: string, _isShiftLocked: boolean): AnimationTrack?
+	-- TEST: forzar animación back dash en todos los dashes
+	return dashBackTrack or dashTrack
+end
+
 local function performDash()
 	if not canDash() then
 		return
@@ -412,8 +429,9 @@ local function performDash()
 		return
 	end
 
-	local direction = getDashDirection()
-	local worldDir = getCameraBasedDashDirection()
+	-- Capturar dirección inicial en el momento del input
+	local initialDirection = getDashDirection()
+	local initialWorldDir = getCameraBasedDashDirection()
 
 	isDashing = true
 	lastDashTime = os.clock()
@@ -425,41 +443,22 @@ local function performDash()
 		stopManaCharging()
 	end
 
-	-- Detectar shiftlock (el ratón está bloqueado al centro)
+	-- Detectar shiftlock
 	local isShiftLocked = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
 
-	-- Elegir animación según dirección (puramente visual, sin afectar físicas)
-	local trackToPlay: AnimationTrack? = nil
-	local isBack = direction == "Back" or direction == "BackLeft" or direction == "BackRight"
-	if isShiftLocked then
-		local isRight = direction == "Right" or direction == "ForwardRight" or direction == "BackRight"
-		local isLeft = direction == "Left" or direction == "ForwardLeft" or direction == "BackLeft"
-		if isBack and dashBackTrack then
-			trackToPlay = dashBackTrack
-		elseif isRight and dashRightTrack then
-			trackToPlay = dashRightTrack
-		elseif isLeft and dashLeftTrack then
-			trackToPlay = dashLeftTrack
-		else
-			trackToPlay = dashTrack
-		end
-	else
-		if isBack and dashBackTrack then
-			trackToPlay = dashBackTrack
-		else
-			trackToPlay = dashTrack
-		end
+	-- Animación según la dirección inicial (puramente visual)
+	local track = selectDashTrack(initialDirection, isShiftLocked)
+	if track then
+		track:Play()
 	end
 
-	if trackToPlay then
-		trackToPlay:Play()
-	end
+	-- Notificar al servidor con la dirección inicial
+	combatRemote:FireServer("Dash", initialDirection)
 
-	-- Congelar movimiento del humanoid para que no pelee con el BodyVelocity
+	-- Freeze WalkSpeed para que el humanoid no interfiera
 	currentHumanoid.WalkSpeed = 0
 
-	-- Desactivar colisiones durante el dash (i-frames)
-	-- así la animación no choca con nada y el dash va recto
+	-- I-frames: quitar colisiones
 	local collidableParts: { BasePart } = {}
 	for _, part in currentCharacter:GetDescendants() do
 		if part:IsA("BasePart") and part.CanCollide then
@@ -468,32 +467,58 @@ local function performDash()
 		end
 	end
 
-	-- Notificar al servidor
-	combatRemote:FireServer("Dash", direction)
-
-	-- Aplicar velocidad de dash
+	-- BodyVelocity: MaxForce solo en XZ → la gravedad sigue actuando normalmente
 	local dashSpeed = CombatConfig.DASH_DISTANCE / CombatConfig.DASH_DURATION
 	local bodyVelocity = Instance.new("BodyVelocity")
 	bodyVelocity.MaxForce = Vector3.new(1e6, 0, 1e6)
-	bodyVelocity.Velocity = worldDir * dashSpeed
+	bodyVelocity.Velocity = initialWorldDir * dashSpeed
 	bodyVelocity.P = 1e6
 	bodyVelocity.Parent = rootPart
 
-	task.delay(CombatConfig.DASH_DURATION, function()
-		if bodyVelocity and bodyVelocity.Parent then
-			bodyVelocity:Destroy()
+	-- Dirección activa: se actualiza cada frame según el input del jugador
+	local activeDir = initialWorldDir
+	local elapsed = 0
+
+	local heartbeatConn: RBXScriptConnection
+	heartbeatConn = RunService.Heartbeat:Connect(function(dt)
+		elapsed += dt
+
+		-- Fin del dash o personaje destruido
+		if elapsed >= CombatConfig.DASH_DURATION or not rootPart.Parent then
+			heartbeatConn:Disconnect()
+
+			if bodyVelocity.Parent then
+				bodyVelocity:Destroy()
+			end
+
+			for _, part in collidableParts do
+				if part and part.Parent then
+					part.CanCollide = true
+				end
+			end
+
+			isDashing = false
+			player:SetAttribute("IsDashing", false)
+			restoreWalkSpeed()
+			return
 		end
 
-		-- Restaurar colisiones
-		for _, part in collidableParts do
-			if part and part.Parent then
-				part.CanCollide = true
+		-- Leer input actual; si no hay tecla presionada, mantener activeDir
+		local inputDir = getCurrentInputWorldDir()
+		if inputDir and inputDir.Magnitude > 0.01 then
+			-- Lerp suave para evitar giros bruscos (factor 12 = redirige en ~1/12 seg)
+			activeDir = activeDir:Lerp(inputDir, math.min(dt * 12, 1))
+			if activeDir.Magnitude > 0 then
+				activeDir = activeDir.Unit
 			end
 		end
 
-		isDashing = false
-		player:SetAttribute("IsDashing", false)
-		restoreWalkSpeed()
+		-- Curva ease-out cúbica: t=0 → 100% vel, t=1 → 0% vel
+		-- A mitad del dash conserva ~88% de velocidad; baja suave al final
+		local t = elapsed / CombatConfig.DASH_DURATION
+		local speedFactor = 1 - (t * t * t)
+
+		bodyVelocity.Velocity = activeDir * dashSpeed * speedFactor
 	end)
 end
 

@@ -243,6 +243,25 @@ function CombatHit.applyDamage(
 			direction,
 			ragdollKnockback or CombatConfig.RAGDOLL_KNOCKBACK_DISTANCE
 		)
+	else
+		-- Si no se bloqueó y no es un golpe con ragdoll final, aplicar hit stun común a los jugadores
+		local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+		if targetPlayer and not isBlocking then
+			-- El cliente escucha "IsStunned" vía attribute changed. Vamos a setear los atributos para stunear al jugador.
+			targetPlayer:SetAttribute("IsStunned", true)
+			local targetHumanoid = targetModel:FindFirstChildOfClass("Humanoid")
+			if targetHumanoid then
+				targetHumanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED or 0
+			end
+			task.delay(CombatConfig.HIT_STUN_DURATION or 0.35, function()
+				if targetPlayer and targetPlayer.Parent then
+					targetPlayer:SetAttribute("IsStunned", false)
+					if targetHumanoid and targetHumanoid.Health > 0 then
+						targetHumanoid.WalkSpeed = targetPlayer:GetAttribute("WalkSpeed") or 16
+					end
+				end
+			end)
+		end
 	end
 end
 
