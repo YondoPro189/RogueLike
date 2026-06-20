@@ -160,7 +160,7 @@ local function startBlock(player: Player)
 	end
 end
 
-local function applyComboEndStun(player: Player)
+local function applyStun(player: Player, duration: number)
 	if playerStunned[player] then
 		return
 	end
@@ -169,14 +169,22 @@ local function applyComboEndStun(player: Player)
 	player:SetAttribute("IsStunned", true)
 
 	local character = player.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED
+	if character then
+		character:SetAttribute("IsStunned", true)
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED
+		end
 	end
 
-	task.delay(CombatConfig.COMBO_END_STUN_DURATION, function()
+	task.delay(duration, function()
 		playerStunned[player] = nil
 		player:SetAttribute("IsStunned", false)
+
+		local currentCharacter = player.Character
+		if currentCharacter then
+			currentCharacter:SetAttribute("IsStunned", false)
+		end
 
 		if not isValidAttacker(player) then
 			return
@@ -188,6 +196,10 @@ local function applyComboEndStun(player: Player)
 			currentHumanoid.WalkSpeed = player:GetAttribute("WalkSpeed") or 16
 		end
 	end)
+end
+
+local function applyComboEndStun(player: Player)
+	applyStun(player, CombatConfig.COMBO_END_STUN_DURATION)
 end
 
 local function isValidAttacker(player: Player): boolean
@@ -212,7 +224,7 @@ local function isValidAttacker(player: Player): boolean
 	return true
 end
 
-local function performHit(attacker: Player, damage: number, shouldRagdoll: boolean?): boolean
+local function performHit(attacker: Player, damage: number, shouldRagdoll: boolean?, isM2: boolean?): boolean
 	local character = attacker.Character
 	if not character then
 		return false
@@ -223,11 +235,24 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 	for _, humanoid in targets do
 		hitAny = true
 
-		local finalDamage = math.floor(damage * CombatHit.getBlockDamageMultiplier(humanoid, character))
+		local targetModel = humanoid.Parent
+		local isBlocking = targetModel and CombatHit.isTargetBlocking(targetModel) or false
+		local isBlockedFromFront = (isBlocking and targetModel) and CombatHit.isBlockingFromFront(targetModel, character) or false
+		local blockBroken = false
+
+		if isM2 and isBlocking and isBlockedFromFront then
+			blockBroken = true
+		end
+
+		local multiplier = 1
+		if isBlocking and not blockBroken then
+			multiplier = CombatHit.getBlockDamageMultiplier(humanoid, character)
+		end
+
+		local finalDamage = math.floor(damage * multiplier)
 		if finalDamage > 0 then
 			humanoid:TakeDamage(finalDamage)
 
-			local targetModel = humanoid.Parent
 			if targetModel then
 				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
 				if targetPlayer then
@@ -238,8 +263,28 @@ local function performHit(attacker: Player, damage: number, shouldRagdoll: boole
 			end
 		end
 
-		if shouldRagdoll and CombatHit.shouldRagdollBlockedTarget(humanoid, character) then
-			local targetModel = humanoid.Parent
+		if blockBroken then
+			if targetModel then
+				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+				if targetPlayer then
+					endBlock(targetPlayer)
+					applyStun(targetPlayer, CombatConfig.BLOCK_BREAK_STUN_DURATION)
+				else
+					-- Dummy / NPC
+					targetModel:SetAttribute("IsStunned", true)
+					targetModel:SetAttribute("IsBlocking", false)
+
+					local targetHumanoid = targetModel:FindFirstChildOfClass("Humanoid")
+					if targetHumanoid then
+						targetHumanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED
+					end
+
+					task.delay(CombatConfig.BLOCK_BREAK_STUN_DURATION, function()
+						targetModel:SetAttribute("IsStunned", false)
+					end)
+				end
+			end
+		elseif shouldRagdoll and CombatHit.shouldRagdollBlockedTarget(humanoid, character) then
 			if targetModel then
 				local attackerRoot = character:FindFirstChild("HumanoidRootPart") :: BasePart?
 				local targetRoot = targetModel:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -309,7 +354,7 @@ combatRemote.OnServerEvent:Connect(function(player: Player, attackType: string, 
 
 		task.delay(CombatConfig.PUNCH_HIT_DELAY, function()
 			if isValidAttacker(player) then
-				performHit(player, damage, comboIndex == 5)
+				performHit(player, damage, comboIndex == 5, false)
 			end
 		end)
 
@@ -334,7 +379,7 @@ combatRemote.OnServerEvent:Connect(function(player: Player, attackType: string, 
 
 		task.delay(CombatConfig.M2_HIT_DELAY, function()
 			if isValidAttacker(player) then
-				m2Hit = performHit(player, CombatConfig.M2_DAMAGE, true)
+				m2Hit = performHit(player, CombatConfig.M2_DAMAGE, true, true)
 			end
 		end)
 
@@ -374,3 +419,23 @@ for _, player in Players:GetPlayers() do
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
+
+local bindablesFolder = ReplicatedStorage:FindFirstChild("Bindables")
+if not bindablesFolder then
+	bindablesFolder = Instance.new("Folder")
+	bindablesFolder.Name = "Bindables"
+	bindablesFolder.Parent = ReplicatedStorage
+end
+
+local breakBlockEvent = bindablesFolder:FindFirstChild("BreakBlockAndStun")
+if not breakBlockEvent then
+	breakBlockEvent = Instance.new("BindableEvent")
+	breakBlockEvent.Name = "BreakBlockAndStun"
+	breakBlockEvent.Parent = bindablesFolder
+end
+
+breakBlockEvent.Event:Connect(function(targetPlayer: Player, duration: number)
+	endBlock(targetPlayer)
+	applyStun(targetPlayer, duration)
+end)
+

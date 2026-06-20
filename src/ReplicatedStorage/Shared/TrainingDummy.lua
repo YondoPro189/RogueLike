@@ -5,11 +5,12 @@ local CombatConfig = require(ReplicatedStorage.Shared.CombatConfig)
 local BlockAnimation = require(ReplicatedStorage.Shared.BlockAnimation)
 local HumanoidHitbox = require(ReplicatedStorage.Shared.HumanoidHitbox)
 
-export type DummyBehavior = "Idle" | "Blocking" | "Attacking"
+export type DummyBehavior = "Idle" | "Blocking" | "Attacking" | "AttackingM2"
 
 export type CombatTracks = {
 	punch: { AnimationTrack },
 	block: AnimationTrack?,
+	m2: AnimationTrack?,
 }
 
 local TrainingDummy = {}
@@ -43,9 +44,18 @@ function TrainingDummy.loadCombatAnimations(humanoid: Humanoid): CombatTracks
 		BlockAnimation.configureTrack(blockTrack)
 	end
 
+	local m2Track: AnimationTrack? = nil
+	if CombatConfig.M2_ANIMATION ~= "" then
+		local m2Animation = Instance.new("Animation")
+		m2Animation.AnimationId = CombatConfig.M2_ANIMATION
+		m2Track = humanoid:LoadAnimation(m2Animation)
+		m2Track.Priority = Enum.AnimationPriority.Action
+	end
+
 	return {
 		punch = punchTracks,
 		block = blockTrack,
+		m2 = m2Track,
 	}
 end
 
@@ -88,6 +98,12 @@ end
 function TrainingDummy.playBlock(tracks: CombatTracks)
 	if tracks.block then
 		BlockAnimation.play(tracks.block)
+	end
+end
+
+function TrainingDummy.playM2(tracks: CombatTracks)
+	if tracks.m2 then
+		tracks.m2:Play()
 	end
 end
 

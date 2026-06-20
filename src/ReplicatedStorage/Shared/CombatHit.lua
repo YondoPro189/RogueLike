@@ -28,7 +28,9 @@ function CombatHit.isBlockingFromFront(blockerCharacter: Model, attackerCharacte
 	end
 
 	local toAttacker = (attackerRoot.Position - blockerRoot.Position).Unit
-	return blockerRoot.CFrame.LookVector:Dot(toAttacker) > 0
+	local angleLimitRad = math.rad(CombatConfig.BLOCK_ANGLE / 2)
+	local cosLimit = math.cos(angleLimitRad)
+	return blockerRoot.CFrame.LookVector:Dot(toAttacker) >= cosLimit
 end
 
 function CombatHit.isTargetBlocking(targetModel: Model): boolean
@@ -55,11 +57,6 @@ function CombatHit.getBlockDamageMultiplier(targetHumanoid: Humanoid, attackerCh
 		return 1
 	end
 
-	local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
-	if targetPlayer then
-		return CombatConfig.BLOCK_DAMAGE_MULTIPLIER
-	end
-
 	if CombatHit.isBlockingFromFront(targetModel, attackerCharacter) then
 		return CombatConfig.BLOCK_DAMAGE_MULTIPLIER
 	end
@@ -75,11 +72,6 @@ function CombatHit.shouldRagdollBlockedTarget(targetHumanoid: Humanoid, attacker
 
 	if not CombatHit.isTargetBlocking(targetModel) then
 		return true
-	end
-
-	local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
-	if targetPlayer then
-		return false
 	end
 
 	return not CombatHit.isBlockingFromFront(targetModel, attackerCharacter)
@@ -142,10 +134,28 @@ function CombatHit.applyDamage(
 	damage: number,
 	shouldRagdoll: boolean?,
 	ragdollDuration: number?,
-	ragdollKnockback: number?
+	ragdollKnockback: number?,
+	isM2: boolean?
 )
-	local damageMultiplier = CombatHit.getBlockDamageMultiplier(targetHumanoid, attackerCharacter)
-	damage = math.floor(damage * damageMultiplier)
+	local targetModel = targetHumanoid.Parent
+	if not targetModel then
+		return
+	end
+
+	local isBlocking = CombatHit.isTargetBlocking(targetModel)
+	local isBlockedFromFront = isBlocking and CombatHit.isBlockingFromFront(targetModel, attackerCharacter)
+	local blockBroken = false
+
+	if isM2 and isBlocking and isBlockedFromFront then
+		blockBroken = true
+	end
+
+	local multiplier = 1
+	if isBlocking and not blockBroken then
+		multiplier = CombatHit.getBlockDamageMultiplier(targetHumanoid, attackerCharacter)
+	end
+
+	damage = math.floor(damage * multiplier)
 
 	if damage <= 0 then
 		return
@@ -153,12 +163,29 @@ function CombatHit.applyDamage(
 
 	targetHumanoid:TakeDamage(damage)
 
-	if shouldRagdoll and CombatHit.shouldRagdollBlockedTarget(targetHumanoid, attackerCharacter) then
-		local targetModel = targetHumanoid.Parent
-		if not targetModel then
-			return
-		end
+	if blockBroken then
+		local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+		if targetPlayer then
+			local bindables = ReplicatedStorage:FindFirstChild("Bindables")
+			local breakBlockEvent = bindables and bindables:FindFirstChild("BreakBlockAndStun") :: BindableEvent?
+			if breakBlockEvent then
+				breakBlockEvent:Fire(targetPlayer, CombatConfig.BLOCK_BREAK_STUN_DURATION)
+			end
+		else
+			-- Dummy / NPC
+			targetModel:SetAttribute("IsStunned", true)
+			targetModel:SetAttribute("IsBlocking", false)
 
+			local targetHumanoid = targetModel:FindFirstChildOfClass("Humanoid")
+			if targetHumanoid then
+				targetHumanoid.WalkSpeed = CombatConfig.STUN_WALK_SPEED
+			end
+
+			task.delay(CombatConfig.BLOCK_BREAK_STUN_DURATION, function()
+				targetModel:SetAttribute("IsStunned", false)
+			end)
+		end
+	elseif shouldRagdoll and CombatHit.shouldRagdollBlockedTarget(targetHumanoid, attackerCharacter) then
 		local Ragdoll = require(ReplicatedStorage.Shared.Ragdoll)
 		local attackerRoot = attackerCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
 		local targetRoot = targetModel:FindFirstChild("HumanoidRootPart") :: BasePart?

@@ -50,4 +50,6 @@ return {
 	-- Bloqueo (mantener F)
 	BLOCK_WALK_SPEED = 5,
 	BLOCK_DAMAGE_MULTIPLIER = 0, -- 0 = inmunidad al bloquear (jugadores: siempre; dummies: desde el frente)
+	BLOCK_BREAK_STUN_DURATION = 1, -- Duración del stun al romper el bloqueo
+	BLOCK_ANGLE = 100, -- Ángulo del bloqueo en grados por el frente
 }
